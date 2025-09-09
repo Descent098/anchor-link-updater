@@ -28,7 +28,7 @@ This is a link to [[#Wireguard]] and a link with an alias like this [[#Wireguard
 
 Demo
 
-[](./docs/demo.gif)
+![](./docs/demo.gif)
 
 ## Contribution Guide
 
