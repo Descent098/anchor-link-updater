@@ -5,7 +5,10 @@ import {
   Setting,
   TFile,
   Notice,
+  Modal,
+  MarkdownView
 } from "obsidian";
+import jaro from "wink-jaro-distance";
 
 /**
  * Settings interface for HeadingLinkSyncPlugin.
@@ -22,6 +25,9 @@ interface HeadingLinkSyncSettings {
 
   /** Whether broken heading links across files should be validated and warned about */
   checkCrossFileLinks: boolean;
+
+   /** Whether to allow for the fix-broken-links UI to work */
+  fixBrokenLinks: boolean;
 }
 
 
@@ -32,7 +38,8 @@ const DEFAULT_SETTINGS: HeadingLinkSyncSettings = {
   enabled: true,
   checkInvalidLinks: true,
   syncCrossFileLinks: true,
-  checkCrossFileLinks: true
+  checkCrossFileLinks: true,
+  fixBrokenLinks: true,
 };
 
 /**
@@ -63,6 +70,19 @@ export default class HeadingLinkSyncPlugin extends Plugin {
 
     // Register the plugin settings tab in the Obsidian settings UI
     this.addSettingTab(new HeadingLinkSyncSettingTab(this.app, this));
+
+    // Add a ribbon or command to open fix modal if enabled
+    if (this.settings.fixBrokenLinks) {
+      this.addCommand({
+        id: 'fix-broken-header-links',
+        name: 'Fix broken heading links in this file...',
+        callback: () => {
+          const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
+          if (!mdView || !mdView.file) return;
+          new FixBrokenLinksModal(this.app, mdView.file, this).open();
+        }
+      });
+    }
 
 
     // Validate links when switching to a markdown file, if validation is enabled
@@ -387,6 +407,130 @@ private async validateHeadingLinksInFile(file: TFile) {
   async saveSettings() {
     await this.saveData(this.settings);
   }
+
+  /**
+ * Collects broken heading links with suggestions data.
+ */
+async collectBrokenHeadingLinks(file: TFile) {
+  const content = await this.app.vault.read(file);
+  const broken: Array<{
+    link: { type: 'internal' | 'cross'; heading: string; raw: string };
+    targetFile: TFile;
+    existingHeadings: string[];
+  }> = [];
+
+  const internalWikiLinkRegex = /\[\[#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
+  const internalMdLinkRegex = /\[.*?\]\(#{1}([^)\s]+)\)/g;
+  const crossFileWikiLinkRegex = /\[\[([^\|\]]+?)#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
+  const crossFileMdLinkRegex = /\[.*?\]\(([^)]+?\.md)#([^\)\s]+)\)/g;
+
+  let match;
+
+  // Internal links [[#Heading]]
+  while ((match = internalWikiLinkRegex.exec(content)) !== null) {
+    const heading = match[1];
+    const targetFile = file; // internal links point to same file
+    const existingHeadings = await this.extractHeadingsFromFile(targetFile);
+    if (!existingHeadings.includes(heading)) {
+      broken.push({
+        link: { type: 'internal', heading, raw: match[0] },
+        targetFile,
+        existingHeadings,
+      });
+    }
+  }
+
+  // Internal markdown links [text](#Heading)
+  while ((match = internalMdLinkRegex.exec(content)) !== null) {
+    const heading = match[1];
+    const targetFile = file;
+    const existingHeadings = await this.extractHeadingsFromFile(targetFile);
+    if (!existingHeadings.includes(heading)) {
+      broken.push({
+        link: { type: 'internal', heading, raw: match[0] },
+        targetFile,
+        existingHeadings,
+      });
+    }
+  }
+
+  // Cross-file links [[Note#Heading]]
+  if (this.settings.checkCrossFileLinks) {
+    while ((match = crossFileWikiLinkRegex.exec(content)) !== null) {
+      const note = match[1];
+      const heading = match[2];
+      const targetFile = this.app.metadataCache.getFirstLinkpathDest(note, file.path);
+      if (targetFile instanceof TFile && targetFile.extension === "md") {
+        const existingHeadings = await this.extractHeadingsFromFile(targetFile);
+        if (!existingHeadings.includes(heading)) {
+          broken.push({
+            link: { type: 'cross', heading, raw: match[0] },
+            targetFile,
+            existingHeadings,
+          });
+        }
+      } else {
+        // Target file missing - maybe add broken link? Up to you.
+      }
+    }
+
+    // Cross-file markdown links [Text](Note.md#Heading)
+    while ((match = crossFileMdLinkRegex.exec(content)) !== null) {
+      const path = match[1];
+      const heading = match[2];
+      const stripped = path.replace(/\.md$/, "");
+      const targetFile = this.app.metadataCache.getFirstLinkpathDest(stripped, file.path);
+      if (targetFile instanceof TFile && targetFile.extension === "md") {
+        const existingHeadings = await this.extractHeadingsFromFile(targetFile);
+        if (!existingHeadings.includes(heading)) {
+          broken.push({
+            link: { type: 'cross', heading, raw: match[0] },
+            targetFile,
+            existingHeadings,
+          });
+        }
+      } else {
+        // Target file missing - maybe add broken link? Up to you.
+      }
+    }
+  }
+
+  return broken;
+}
+
+
+/**
+ * Replace one broken heading link with a corrected heading.
+ */
+async replaceHeadingLink(file: TFile, linkInfo: { type: 'internal' | 'cross'; heading: string; raw: string; targetFile: TFile }, newHeading: string) {
+  let content = await this.app.vault.read(file);
+  const escapedOld = this.escapeForRegex(linkInfo.heading);
+
+  // Build a regex to match the broken link
+  // For wiki links: [[#OldHeading]] or [[#OldHeading|Alias]]
+  let pattern: RegExp;
+  let replacement: string;
+
+  if (linkInfo.type === 'internal') {
+    // Match [[#OldHeading]] or [[#OldHeading|...]]
+    pattern = new RegExp(`\\[\\[#${escapedOld}(\\|[^\\]]*)?\\]\\]`, 'g');
+    replacement = `[[#${newHeading}$1]]`; // Preserve alias if present
+  } else if (linkInfo.type === 'cross') {
+    // Match [[FileName#OldHeading]] or [[FileName#OldHeading|...]]
+    const fileName = this.escapeForRegex(linkInfo.targetFile.basename);
+    pattern = new RegExp(`\\[\\[${fileName}#${escapedOld}(\\|[^\\]]*)?\\]\\]`, 'g');
+    replacement = `[[${linkInfo.targetFile.basename}#${newHeading}$1]]`;
+  } else {
+    console.warn('Unsupported link type:', linkInfo);
+    return;
+  }
+
+  // Apply the replacement
+  const updatedContent = content.replace(pattern, replacement);
+  if (updatedContent !== content) {
+    await this.app.vault.modify(file, updatedContent);
+  }
+}
 }
 
 /**
@@ -474,7 +618,78 @@ class HeadingLinkSyncSettingTab extends PluginSettingTab {
       );
 
 
+      new Setting(containerEl)
+  .setName("Enable 'Fix Broken Links' UI")
+  .setDesc("Show a button to walk through broken heading links with suggestions.")
+  .addToggle((toggle) =>
+    toggle
+      .setValue(this.plugin.settings.fixBrokenLinks)
+      .onChange(async (value) => {
+        this.plugin.settings.fixBrokenLinks = value;
+        await this.plugin.saveSettings();
+        new Notice(`Fix Broken Links UI ${value ? "enabled" : "disabled"}`);
+      })
+  );
+
+
+
 
 
   }
 }
+
+
+/**
+ * Modal to present broken heading links and suggest fixes.
+ */
+class FixBrokenLinksModal extends Modal {
+  constructor(app: App, private file: TFile, private plugin: HeadingLinkSyncPlugin) {
+    super(app);
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h2', { text: `Fix Broken Heading Links in ${this.file.basename}.md` });
+
+    const brokenLinks = await this.plugin.collectBrokenHeadingLinks(this.file);
+    if (brokenLinks.length === 0) {
+      contentEl.createEl('p', { text: 'All header links are working!' });
+      return;
+    }
+
+    brokenLinks.forEach(({ link, targetFile, existingHeadings }) => {
+      const row = contentEl.createDiv({ cls: 'fix-row' });
+
+      row.createEl('div', {
+        text: `Broken link: ${link.raw} in ${targetFile.basename}.md`
+      });
+
+      // Compute suggestions via Jaro similarity
+      const suggestions = existingHeadings
+        .map(h => ({ h, score: jaro(h, link.heading).similarity }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3);
+
+      if (suggestions.length > 0) {
+        const sel = row.createEl('select');
+        suggestions.forEach(s => sel.createEl('option', {
+          text: `${targetFile.basename}.md#${s.h} (${(s.score*100).toFixed(1)}%)`,
+        }));
+        const btn = row.createEl('button', { text: 'Replace' });
+        btn.onclick = async () => {
+          await this.plugin.replaceHeadingLink(this.file, { ...link, targetFile }, suggestions[sel.selectedIndex].h);
+          new Notice(`Replaced with "${suggestions[sel.selectedIndex].h}"`);
+          this.close();
+        };
+        row.createEl('hr')
+      }
+    });
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+
