@@ -658,6 +658,11 @@ class FixBrokenLinksModal extends Modal {
       return;
     }
 
+    const actionable: Array<{
+      linkInfo: { type: 'internal' | 'cross'; heading: string; raw: string; targetFile: TFile };
+      suggestion: string;
+    }> = [];
+
     brokenLinks.forEach(({ link, targetFile, existingHeadings }) => {
       const row = contentEl.createDiv({ cls: 'fix-row' });
 
@@ -674,17 +679,43 @@ class FixBrokenLinksModal extends Modal {
       if (suggestions.length > 0) {
         const sel = row.createEl('select');
         suggestions.forEach(s => sel.createEl('option', {
-          text: `${targetFile.basename}.md#${s.h} (${(s.score*100).toFixed(1)}%)`,
+          text: `${targetFile.basename}.md#${s.h} (${(s.score * 100).toFixed(1)}%)`,
         }));
+
+        // Store for Replace All
+        actionable.push({
+          linkInfo: { ...link, targetFile },
+          suggestion: suggestions[0].h // Use top suggestion
+        });
+
         const btn = row.createEl('button', { text: 'Replace' });
         btn.onclick = async () => {
           await this.plugin.replaceHeadingLink(this.file, { ...link, targetFile }, suggestions[sel.selectedIndex].h);
           new Notice(`Replaced with "${suggestions[sel.selectedIndex].h}"`);
-          this.close();
+          await this.onOpen(); // Refresh modal
         };
-        row.createEl('hr')
+
+        row.createEl('hr');
       }
     });
+    if (actionable.length > 0) {
+      const footer = contentEl.createDiv({ cls: 'fix-footer' });
+      const replaceAllBtn = footer.createEl('button', { text: 'Replace All (Top Suggestions)' });
+
+      replaceAllBtn.onclick = async () => {
+        replaceAllBtn.disabled = true;
+        replaceAllBtn.setText('Replacing...');
+
+        for (const { linkInfo, suggestion } of actionable) {
+          await this.plugin.replaceHeadingLink(this.file, linkInfo, suggestion);
+        }
+
+        new Notice(`✅ Replaced ${actionable.length} broken links.`);
+        replaceAllBtn.disabled = false;
+        replaceAllBtn.setText('Replace All (Top Suggestions)');
+        await this.onOpen(); // Refresh modal
+      };
+    }
   }
 
   onClose() {
