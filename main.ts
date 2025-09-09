@@ -13,13 +13,18 @@ import {
 interface HeadingLinkSyncSettings {
   /** Whether the plugin is enabled */
   enabled: boolean;
+
+  /** Whether broken heading links should be validated and warned about */
+  checkInvalidLinks: boolean;
 }
+
 
 /**
  * Default plugin settings.
  */
 const DEFAULT_SETTINGS: HeadingLinkSyncSettings = {
   enabled: true,
+  checkInvalidLinks: true,
 };
 
 /**
@@ -50,6 +55,22 @@ export default class HeadingLinkSyncPlugin extends Plugin {
 
     // Register the plugin settings tab in the Obsidian settings UI
     this.addSettingTab(new HeadingLinkSyncSettingTab(this.app, this));
+
+
+    // Validate links when switching to a markdown file, if validation is enabled
+    this.registerEvent(
+      this.app.workspace.on("file-open", async (file) => {
+        if (
+          this.settings.enabled &&
+          this.settings.checkInvalidLinks &&
+          file instanceof TFile &&
+          file.extension === "md"
+        ) {
+          console.log("Checking heading links on file open");
+          await this.validateHeadingLinksInFile(file);
+        }
+      })
+    );
 
     // Register an event handler for file modifications
     this.registerEvent(
@@ -115,6 +136,15 @@ export default class HeadingLinkSyncPlugin extends Plugin {
           console.log(
             `🔁 Updated links:\n  [[#${oldHeading}]] -> [[#${newHeading}]]\n  (#${oldHeading}) -> (#${newHeading})`
           );
+          this.fileHeadingsCache.set(file.path, newHeadings);
+
+          if (this.settings.checkInvalidLinks) {
+            // Validate all global heading links in the file (heading links that exist in other files)
+            console.log(`🔁 Validating global links`);
+            await this.validateHeadingLinksInFile(file);
+          }
+          
+
         }
 
         // If any replacements occurred, write updated content back to the file
@@ -150,6 +180,60 @@ export default class HeadingLinkSyncPlugin extends Plugin {
     }
     return headings;
   }
+
+  /**
+   * Extracts headings from a TFile.
+   * @param file Target markdown file
+   * @returns Array of heading strings
+   */
+  private async extractHeadingsFromFile(file: TFile): Promise<string[]> {
+    const content = await this.app.vault.read(file);
+    return this.extractHeadings(content);
+  }
+
+
+  /**
+ * Validates heading links in a file and shows a warning for any broken ones.
+ * Supports [[#Heading]], [[OtherFile#Heading]], and [text](OtherFile.md#Heading).
+ * @param file The file to validate
+ */
+private async validateHeadingLinksInFile(file: TFile) {
+  const content = await this.app.vault.read(file);
+  const brokenLinks: string[] = [];
+
+  // Obsidian-style internal heading links: [[#Heading]] or [[#Heading|Alias]]
+  const internalWikiLinkRegex = /\[\[#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
+
+  // Markdown-style internal heading links: [text](#heading)
+  const internalMdLinkRegex = /\[.*?\]\(#{1}([^)\s]+)\)/g;
+
+  const allMatches: Array<[string, string]> = [];
+
+  let match;
+
+  // Handle [[#Heading]]
+  while ((match = internalWikiLinkRegex.exec(content)) !== null) {
+    // ["[[#Heading]]", "Heading"]
+    allMatches.push([file.path, match[1]]);
+  }
+
+  // Handle [text](#heading)
+  while ((match = internalMdLinkRegex.exec(content)) !== null) {
+    // ["[text](#heading)", "heading"]
+    allMatches.push([file.path, match[1]]);
+  }
+
+  for (const [_, heading] of allMatches) {
+    const headings = await this.extractHeadingsFromFile(file);
+    if (!headings.includes(heading)) {
+      brokenLinks.push(`Missing heading: #${heading}`);
+    }
+  }
+
+  if (brokenLinks.length > 0) {
+    new Notice(`⚠️ Broken heading links found:\n${brokenLinks.join("\n")}`, 8000);
+  }
+}
 
   /**
    * Compares old and new heading arrays to detect heading renames.
@@ -256,5 +340,23 @@ class HeadingLinkSyncSettingTab extends PluginSettingTab {
             new Notice(`Heading Link Sync ${value ? "enabled" : "disabled"}`);
           })
       );
+    
+    // Add a toggle setting for enabling/disabling the warning for invalid links
+    new Setting(containerEl)
+      .setName("Check for invalid heading links")
+      .setDesc("Show a warning when heading links point to non-existent headings.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.checkInvalidLinks)
+          .onChange(async (value) => {
+            this.plugin.settings.checkInvalidLinks = value;
+            await this.plugin.saveSettings();
+            new Notice(
+              `Invalid heading link warnings ${value ? "enabled" : "disabled"}`
+            );
+          })
+      );
+
+
   }
 }
