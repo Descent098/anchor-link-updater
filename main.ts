@@ -282,7 +282,7 @@ private async validateHeadingLinksInFile(file: TFile) {
   const internalMdLinkRegex = /\[.*?\]\(#{1}([^)\s]+)\)/g;
 
   // Cross-file: [[Note#Heading]]
-  const crossFileWikiLinkRegex = /\[\[([^\|\]]+?)#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
+  const crossFileWikiLinkRegex = /\[\[([^\|\]]+?)(?:\.md)?#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
 
   // Cross-file: [Text](Note.md#Heading)
   const crossFileMdLinkRegex = /\[.*?\]\(([^)]+?\.md)#([^\)\s]+)\)/g;
@@ -305,7 +305,8 @@ private async validateHeadingLinksInFile(file: TFile) {
   if (this.settings.checkCrossFileLinks) {
     while ((match = crossFileWikiLinkRegex.exec(content)) !== null) {
       const [note, heading] = [match[1], match[2]];
-      const targetFile = this.app.metadataCache.getFirstLinkpathDest(note, file.path);
+      const cleanNote = note.replace(/\.md$/, '');
+const targetFile = this.app.metadataCache.getFirstLinkpathDest(cleanNote, file.path);
       if (targetFile) {
         allMatches.push([targetFile.path, heading]);
       } else {
@@ -421,7 +422,7 @@ async collectBrokenHeadingLinks(file: TFile) {
 
   const internalWikiLinkRegex = /\[\[#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
   const internalMdLinkRegex = /\[.*?\]\(#{1}([^)\s]+)\)/g;
-  const crossFileWikiLinkRegex = /\[\[([^\|\]]+?)#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
+  const crossFileWikiLinkRegex = /\[\[([^\|\]]+?)(?:\.md)?#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
   const crossFileMdLinkRegex = /\[.*?\]\(([^)]+?\.md)#([^\)\s]+)\)/g;
 
   let match;
@@ -459,7 +460,8 @@ async collectBrokenHeadingLinks(file: TFile) {
     while ((match = crossFileWikiLinkRegex.exec(content)) !== null) {
       const note = match[1];
       const heading = match[2];
-      const targetFile = this.app.metadataCache.getFirstLinkpathDest(note, file.path);
+      const cleanNote = note.replace(/\.md$/, '');
+const targetFile = this.app.metadataCache.getFirstLinkpathDest(cleanNote, file.path);
       if (targetFile instanceof TFile && targetFile.extension === "md") {
         const existingHeadings = await this.extractHeadingsFromFile(targetFile);
         if (!existingHeadings.includes(heading)) {
@@ -518,8 +520,14 @@ async replaceHeadingLink(file: TFile, linkInfo: { type: 'internal' | 'cross'; he
   } else if (linkInfo.type === 'cross') {
     // Match [[FileName#OldHeading]] or [[FileName#OldHeading|...]]
     const fileName = this.escapeForRegex(linkInfo.targetFile.basename);
-    pattern = new RegExp(`\\[\\[${fileName}#${escapedOld}(\\|[^\\]]*)?\\]\\]`, 'g');
-    replacement = `[[${linkInfo.targetFile.basename}#${newHeading}$1]]`;
+    const fileNameWithMd = this.escapeForRegex(linkInfo.targetFile.basename + '.md');
+
+    // Match [[File#Heading]] and [[File.md#Heading]]
+    pattern = new RegExp(
+      `\\[\\[(${fileName}|${fileNameWithMd})#${escapedOld}(\\|[^\\]]*)?\\]\\]`,
+      'g'
+    );
+    replacement = `[[${linkInfo.targetFile.basename}#${newHeading}$2]]`;
   } else {
     console.warn('Unsupported link type:', linkInfo);
     return;
