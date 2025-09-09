@@ -1,7 +1,7 @@
 {
 	"id": "anchor-link-updater",
 	"name": "Anchor Link Updator",
-	"version": "0.1.0",
+	"version": "1.1.0",
 	"minAppVersion": "0.15.0",
 	"description": "Allows you to update the anchor links within a document",
 	"author": "Obsidian",
