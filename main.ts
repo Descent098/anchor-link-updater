@@ -14,8 +14,6 @@ import jaro from "wink-jaro-distance";
  * Settings interface for HeadingLinkSyncPlugin.
  */
 interface HeadingLinkSyncSettings {
-  /** Whether the plugin is enabled */
-  enabled: boolean;
 
   /** Whether broken heading links should be validated and warned about */
   checkInvalidLinks: boolean;
@@ -35,7 +33,6 @@ interface HeadingLinkSyncSettings {
  * Default plugin settings.
  */
 const DEFAULT_SETTINGS: HeadingLinkSyncSettings = {
-  enabled: true,
   checkInvalidLinks: true,
   syncCrossFileLinks: true,
   checkCrossFileLinks: true,
@@ -49,6 +46,22 @@ interface HeadingChange {
   oldHeading: string;
   newHeading: string;
 }
+
+// Matches headings in Markdown: lines starting with 1-6 hashes
+const MARKDOWN_HEADING_REGEX = /^(#{1,6})\s+(.*)$/gm;
+
+// Matches internal heading links: [[#Heading]] or [[#Heading|Alias]]
+const INTERNAL_WIKI_LINK_REGEX = /\[\[#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
+
+// Matches internal markdown-style heading links: [text](#Heading)
+const INTERNAL_MD_LINK_REGEX = /\[.*?\]\(#{1}([^)\s]+)\)/g;
+
+// Matches cross-file wiki-style links: [[FileName#Heading]] or [[FileName#Heading|Alias]]
+const CROSS_FILE_WIKI_LINK_REGEX = /\[\[([^\|\]]+?)(?:\.md)?#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
+
+// Matches cross-file markdown-style links: [Text](Note.md#Heading)
+const CROSS_FILE_MD_LINK_REGEX = /\[.*?\]\(([^)]+?\.md)#([^\)\s]+)\)/g;
+
 
 /**
  * Main plugin class that synchronizes heading links within a file
@@ -89,7 +102,6 @@ export default class HeadingLinkSyncPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("file-open", async (file) => {
         if (
-          this.settings.enabled &&
           this.settings.checkInvalidLinks &&
           file instanceof TFile &&
           file.extension === "md"
@@ -103,8 +115,6 @@ export default class HeadingLinkSyncPlugin extends Plugin {
     // Register an event handler for file modifications
     this.registerEvent(
       this.app.vault.on("modify", async (file) => {
-        // Only proceed if plugin is enabled
-        if (!this.settings.enabled) return;
 
         // Only proceed if the modified file is a markdown file
         if (!(file instanceof TFile) || file.extension !== "md") return;
@@ -204,7 +214,7 @@ export default class HeadingLinkSyncPlugin extends Plugin {
     // \s+       - at least one whitespace after hashes
     // (.*)      - capture the rest of the line (heading text)
     // gm        - global and multiline flags to find all matches in the content
-    const headingRegex = /^(#{1,6})\s+(.*)$/gm;
+    const headingRegex = MARKDOWN_HEADING_REGEX;
     const headings: string[] = [];
     let match;
     while ((match = headingRegex.exec(content)) !== null) {
@@ -278,14 +288,14 @@ export default class HeadingLinkSyncPlugin extends Plugin {
     const content = await this.app.vault.read(file);
     const brokenLinks: string[] = [];
 
-    const internalWikiLinkRegex = /\[\[#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
-    const internalMdLinkRegex = /\[.*?\]\(#{1}([^)\s]+)\)/g;
+    const internalWikiLinkRegex = INTERNAL_WIKI_LINK_REGEX;
+    const internalMdLinkRegex = INTERNAL_MD_LINK_REGEX;
 
     // Cross-file: [[Note#Heading]]
-    const crossFileWikiLinkRegex = /\[\[([^\|\]]+?)(?:\.md)?#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
+    const crossFileWikiLinkRegex = CROSS_FILE_WIKI_LINK_REGEX;
 
     // Cross-file: [Text](Note.md#Heading)
-    const crossFileMdLinkRegex = /\[.*?\]\(([^)]+?\.md)#([^\)\s]+)\)/g;
+    const crossFileMdLinkRegex = CROSS_FILE_MD_LINK_REGEX;
 
     const allMatches: Array<[string, string]> = [];
 
@@ -420,10 +430,10 @@ export default class HeadingLinkSyncPlugin extends Plugin {
       existingHeadings: string[];
     }> = [];
 
-    const internalWikiLinkRegex = /\[\[#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
-    const internalMdLinkRegex = /\[.*?\]\(#{1}([^)\s]+)\)/g;
-    const crossFileWikiLinkRegex = /\[\[([^\|\]]+?)(?:\.md)?#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
-    const crossFileMdLinkRegex = /\[.*?\]\(([^)]+?\.md)#([^\)\s]+)\)/g;
+    const internalWikiLinkRegex = INTERNAL_WIKI_LINK_REGEX;
+    const internalMdLinkRegex = INTERNAL_MD_LINK_REGEX;
+    const crossFileWikiLinkRegex = CROSS_FILE_WIKI_LINK_REGEX;
+    const crossFileMdLinkRegex = CROSS_FILE_MD_LINK_REGEX;
 
     let match;
 
@@ -564,20 +574,6 @@ class HeadingLinkSyncSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-
-    // Add a toggle setting for enabling/disabling the plugin
-    new Setting(containerEl)
-      .setName("Enable Heading Link Sync")
-      .setDesc("Toggle automatic updating of heading links in the current file.")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.enabled)
-          .onChange(async (value) => {
-            this.plugin.settings.enabled = value;
-            await this.plugin.saveSettings();
-            new Notice(`Heading Link Sync ${value ? "enabled" : "disabled"}`);
-          })
-      );
 
     // Add a toggle setting for enabling/disabling the warning for invalid links
     new Setting(containerEl)

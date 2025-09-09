@@ -1,8 +1,11 @@
 # Anchor Link Updater
 
-This project seeks to solve the problem of internal heading links (anchor links) not being updated. It will watch for changes in your headings, and when they happen it will update your wikilinks. 
+This project seeks to solve the problem of internal heading links (anchor links) not being handled well in obsidian, it features:
 
-So if you have a document with:
+- Automatic updating of internal/external links when a heading is changed in a document
+- A UI to help automate fixing already broken heading links in a document
+
+For example, if you have a document with:
 
 ```md
 ## Wireguard (TODO)
@@ -26,9 +29,26 @@ If you update the `## Wireguard (TODO)` to `## Wireguard` it will update your li
 This is a link to [[#Wireguard]] and a link with an alias like this [[#Wireguard|Wireguard]].
 ```
 
+Same thing if that content is in `tunneling.md` and you have content in `otherfile.md` that looks like this:
+
+```md
+This is a link to [[tunneling#Wireguard (TODO)]] and a link with an alias like this [[tunneling#Wireguard (TODO)|Wireguard]].
+```
+
+You can also have global syncing enabled and it will update the links to:
+
+```md
+This is a link to [[tunneling#Wireguard]] and a link with an alias like this [[tunneling#Wireguard|Wireguard]].
+```
+
 Demo
 
 ![](./docs/demo.gif)
+
+## Notes/Warnings
+
+- Each setting/feature can be toggled on and off as you please
+- The global syncing can be slow if you have a TON of files
 
 ## Contribution Guide
 
