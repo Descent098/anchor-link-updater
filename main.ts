@@ -21,7 +21,7 @@ interface HeadingLinkSyncSettings {
   syncCrossFileLinks: boolean;
 
   /** Whether broken heading links across files should be validated and warned about */
-  // checkCrossFileLinks: boolean;
+  checkCrossFileLinks: boolean;
 }
 
 
@@ -32,7 +32,7 @@ const DEFAULT_SETTINGS: HeadingLinkSyncSettings = {
   enabled: true,
   checkInvalidLinks: true,
   syncCrossFileLinks: true,
-  // checkCrossFileLinks: true
+  checkCrossFileLinks: true
 };
 
 /**
@@ -258,32 +258,61 @@ private async validateHeadingLinksInFile(file: TFile) {
   const content = await this.app.vault.read(file);
   const brokenLinks: string[] = [];
 
-  // Obsidian-style internal heading links: [[#Heading]] or [[#Heading|Alias]]
   const internalWikiLinkRegex = /\[\[#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
-
-  // Markdown-style internal heading links: [text](#heading)
   const internalMdLinkRegex = /\[.*?\]\(#{1}([^)\s]+)\)/g;
+
+  // Cross-file: [[Note#Heading]]
+  const crossFileWikiLinkRegex = /\[\[([^\|\]]+?)#([^\|\]]+)(?:\|[^\]]*)?\]\]/g;
+
+  // Cross-file: [Text](Note.md#Heading)
+  const crossFileMdLinkRegex = /\[.*?\]\(([^)]+?\.md)#([^\)\s]+)\)/g;
 
   const allMatches: Array<[string, string]> = [];
 
   let match;
 
-  // Handle [[#Heading]]
+  // Internal: [[#Heading]]
   while ((match = internalWikiLinkRegex.exec(content)) !== null) {
-    // ["[[#Heading]]", "Heading"]
     allMatches.push([file.path, match[1]]);
   }
 
-  // Handle [text](#heading)
+  // Internal: [text](#heading)
   while ((match = internalMdLinkRegex.exec(content)) !== null) {
-    // ["[text](#heading)", "heading"]
     allMatches.push([file.path, match[1]]);
   }
 
-  for (const [_, heading] of allMatches) {
-    const headings = await this.extractHeadingsFromFile(file);
-    if (!headings.includes(heading)) {
-      brokenLinks.push(`Missing heading: #${heading}`);
+  // Cross-file: [[Note#Heading]]
+  if (this.settings.checkCrossFileLinks) {
+    while ((match = crossFileWikiLinkRegex.exec(content)) !== null) {
+      const [note, heading] = [match[1], match[2]];
+      const targetFile = this.app.metadataCache.getFirstLinkpathDest(note, file.path);
+      if (targetFile) {
+        allMatches.push([targetFile.path, heading]);
+      } else {
+        brokenLinks.push(`Missing file: [[${note}#${heading}]]`);
+      }
+    }
+
+    // Cross-file: [Text](Note.md#Heading)
+    while ((match = crossFileMdLinkRegex.exec(content)) !== null) {
+      const [path, heading] = [match[1], match[2]];
+      const stripped = path.replace(/\.md$/, "");
+      const targetFile = this.app.metadataCache.getFirstLinkpathDest(stripped, file.path);
+      if (targetFile) {
+        allMatches.push([targetFile.path, heading]);
+      } else {
+        brokenLinks.push(`Missing file: [→ ${path}#${heading}]`);
+      }
+    }
+  }
+
+  for (const [targetPath, heading] of allMatches) {
+    const targetFile = this.app.vault.getAbstractFileByPath(targetPath);
+    if (targetFile instanceof TFile && targetFile.extension === "md") {
+      const headings = await this.extractHeadingsFromFile(targetFile);
+      if (!headings.includes(heading)) {
+        brokenLinks.push(`Missing heading: ${targetPath}#${heading}`);
+      }
     }
   }
 
@@ -427,6 +456,23 @@ class HeadingLinkSyncSettingTab extends PluginSettingTab {
             new Notice(`Cross-file heading sync ${value ? "enabled" : "disabled"}`);
           })
       );
+
+    // Add a toggle setting for validating cross-file heading links
+    new Setting(containerEl)
+      .setName("Check cross-file heading links")
+      .setDesc("Show a warning when links point to headings in other files that don't exist.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.checkCrossFileLinks)
+          .onChange(async (value) => {
+            this.plugin.settings.checkCrossFileLinks = value;
+            await this.plugin.saveSettings();
+            new Notice(
+              `Cross-file heading link validation ${value ? "enabled" : "disabled"}`
+            );
+          })
+      );
+
 
 
 
