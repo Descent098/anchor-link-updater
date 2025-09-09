@@ -16,6 +16,12 @@ interface HeadingLinkSyncSettings {
 
   /** Whether broken heading links should be validated and warned about */
   checkInvalidLinks: boolean;
+
+  /** Whether checking Heading links across files should be updated */
+  syncCrossFileLinks: boolean;
+
+  /** Whether broken heading links across files should be validated and warned about */
+  // checkCrossFileLinks: boolean;
 }
 
 
@@ -25,6 +31,8 @@ interface HeadingLinkSyncSettings {
 const DEFAULT_SETTINGS: HeadingLinkSyncSettings = {
   enabled: true,
   checkInvalidLinks: true,
+  syncCrossFileLinks: true,
+  // checkCrossFileLinks: true
 };
 
 /**
@@ -151,7 +159,12 @@ export default class HeadingLinkSyncPlugin extends Plugin {
         if (updatedContent !== newContent) {
           await this.app.vault.modify(file, updatedContent);
           new Notice("Heading links updated to match renamed headings.");
+
+          // Update cross-file links pointing to this file
+          await this.updateCrossFileHeadingLinks(file, changes);
         }
+
+        
 
         // Update cache with the new headings after modification
         this.fileHeadingsCache.set(file.path, newHeadings);
@@ -190,6 +203,50 @@ export default class HeadingLinkSyncPlugin extends Plugin {
     const content = await this.app.vault.read(file);
     return this.extractHeadings(content);
   }
+
+
+  /**
+ * Updates links in all other files pointing to headings in the given file.
+ * Only applies if syncCrossFileLinks setting is enabled.
+ */
+private async updateCrossFileHeadingLinks(
+  targetFile: TFile,
+  changes: HeadingChange[]
+) {
+  if (!this.settings.syncCrossFileLinks) return;
+
+  const targetFileName = targetFile.basename;
+
+  const allFiles = this.app.vault.getMarkdownFiles();
+
+  for (const file of allFiles) {
+    if (file.path === targetFile.path) continue; // skip self
+
+    let content = await this.app.vault.read(file);
+    let updated = false;
+
+    for (const { oldHeading, newHeading } of changes) {
+      const escapedOldHeading = this.escapeForRegex(oldHeading);
+      const escapedFileName = this.escapeForRegex(targetFileName);
+
+      const crossFileLinkRegex = new RegExp(
+        `\\[\\[${escapedFileName}#${escapedOldHeading}(\\|[^\\]]+)?\\]\\]`,
+        "g"
+      );
+
+      content = content.replace(crossFileLinkRegex, (match, aliasPart) => {
+        updated = true;
+        return `[[${targetFileName}#${newHeading}${aliasPart ?? ""}]]`;
+      });
+    }
+
+    if (updated) {
+      await this.app.vault.modify(file, content);
+      console.log(`🔄 Updated cross-file links in: ${file.path}`);
+    }
+  }
+}
+
 
 
   /**
@@ -344,7 +401,7 @@ class HeadingLinkSyncSettingTab extends PluginSettingTab {
     // Add a toggle setting for enabling/disabling the warning for invalid links
     new Setting(containerEl)
       .setName("Check for invalid heading links")
-      .setDesc("Show a warning when heading links point to non-existent headings.")
+      .setDesc("Show a warning when heading links point to non-existent headings within the document.")
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.checkInvalidLinks)
@@ -356,6 +413,21 @@ class HeadingLinkSyncSettingTab extends PluginSettingTab {
             );
           })
       );
+
+    // Add a toggle setting for enabling/disabling the syncing headings across files
+    new Setting(containerEl)
+      .setName("Sync cross-file heading links")
+      .setDesc("Update heading links in other notes when a heading is renamed (e.g. [[Wireguard#Wireguard (TODO)]] -> [[Wireguard#Wireguard]])")
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.syncCrossFileLinks)
+          .onChange(async (value) => {
+            this.plugin.settings.syncCrossFileLinks = value;
+            await this.plugin.saveSettings();
+            new Notice(`Cross-file heading sync ${value ? "enabled" : "disabled"}`);
+          })
+      );
+
 
 
   }
